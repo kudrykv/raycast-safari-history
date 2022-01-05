@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import initSqlJs, { Database, SqlValue } from "sql.js";
 import { join } from "path";
 import { environment } from "@raycast/api";
@@ -11,73 +11,40 @@ export interface HistoryEntry {
   date: Date;
 }
 
-export const useHistorySearch = (search: string) => {
-  console.debug("useHistorySearch");
+export interface HistorySearch {
+  isLoading: boolean;
+  error: Error | undefined;
+  entries: HistoryEntry[];
+}
 
+export const useHistorySearch = (search: string): HistorySearch => {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [error, setError] = useState<Error>();
   const [isLoading, setIsLoading] = useState(true);
-  const dbRef = useRef<Database>();
-
-  let cancel = false;
+  const unsetError = () => setError(undefined);
 
   useEffect(() => {
-    if (cancel) {
-      console.debug("canceled");
-
-      return;
-    }
-
-    setError(undefined);
+    let dbRef: Database | undefined;
 
     Promise.resolve()
-      .then(() => dbRef.current || loadDb())
-      .then(db => {
-        dbRef.current = db;
-        console.debug("upserted ref to db");
-
-        const { query, params } = prepareQuery(search);
-
-        const res = db.exec(query, params);
-        console.debug("queried the db");
-
-        return res[0] ? res[0].values.map(item => ({
-          id: item[0],
-          url: item[1],
-          title: item[2],
-          date: new Date((item[3] as number + 978307200) * 1000)
-        } as HistoryEntry)) : [];
-      })
+      .then(unsetError)
+      .then(loadDb)
+      .then(db => dbRef = db)
+      .then(performSearch(search))
       .then(setEntries)
-      .catch(e => {
-        setError(e);
-      })
-      .finally(() => setIsLoading(false));
-
-    return () => {
-      cancel = true;
-      console.debug("set cancel");
-    };
+      .catch(setError)
+      .finally(() => setIsLoading(false))
+      .finally(() => dbRef?.close())
   }, [search]);
-
-  useEffect(() => {
-    return () => {
-      dbRef.current?.close();
-      console.debug("closed db");
-    };
-  }, []);
 
   return { entries, error, isLoading };
 };
 
 
-const loadDb = (): Promise<Database> => {
-  console.debug("loadDb");
-
-  // noinspection JSUnusedGlobalSymbols
-  return initSqlJs({ locateFile: () => join(environment.assetsPath, "sql-wasm.wasm") })
+// noinspection JSUnusedGlobalSymbols
+const loadDb = (): Promise<Database> =>
+  initSqlJs({ locateFile: () => join(environment.assetsPath, "sql-wasm.wasm") })
     .then(SQL => new SQL.Database(readFileSync(historyDbPath())));
-};
 
 
 const historyDbPath = () => join(userDataDirectoryPath(), "History.db");
@@ -110,6 +77,24 @@ const prepareQuery = (query: string) => {
     params
   };
 };
+
+
+const performSearch = (search: string) =>
+  (db: Database) => {
+    const { query, params } = prepareQuery(search);
+    const res = db.exec(query, params);
+
+    return res[0] ? res[0].values.map(mapSQLValueToHistoryEntry) : [];
+  };
+
+
+const mapSQLValueToHistoryEntry = (item: SqlValue[]): HistoryEntry =>
+  ({
+    id: item[0],
+    url: item[1],
+    title: item[2],
+    date: new Date((item[3] as number + 978307200) * 1000)
+  } as HistoryEntry);
 
 
 const queryPrefix = `select
